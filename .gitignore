@@ -1,0 +1,4 @@
+*.pth
+.venv
+.vscode
+logs
