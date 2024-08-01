@@ -2,6 +2,7 @@ import torch
 from torch import Tensor
 from torch.distributions import (
     Distribution,
+    Beta,
     Normal,
     Categorical,
     Independent,
@@ -9,59 +10,10 @@ from torch.distributions import (
 )
 
 
-import numpy as np
-
-
-class RunningMeanStd:
-    # Dynamically calculate mean and std
-    def __init__(self, shape):  # shape:the dimension of input data
-        self.n = 0
-        self.mean = np.zeros(shape)
-        self.S = np.zeros(shape)
-        self.std = np.sqrt(self.S)
-
-    def update(self, x):
-        x = np.array(x)
-        self.n += 1
-        if self.n == 1:
-            self.mean = x
-            self.std = x
-        else:
-            old_mean = self.mean.copy()
-            self.mean = old_mean + (x - old_mean) / self.n
-            self.S = self.S + (x - old_mean) * (x - self.mean)
-            self.std = np.sqrt(self.S / self.n)
-
-
-class Normalization:
-    def __init__(self, shape):
-        self.running_ms = RunningMeanStd(shape=shape)
-
-    def __call__(self, x, update=True):
-        # Whether to update the mean and std,during the evaluating,update=False
-        if update:
-            self.running_ms.update(x)
-        x = (x - self.running_ms.mean) / (self.running_ms.std + 1e-8)
-
-        return x
-
-
-class RewardScaling:
-    def __init__(self, shape, gamma: float):
-        self.shape = shape  # reward shape = 1
-        self.gamma = gamma  # discount factor
-        self.running_ms = RunningMeanStd(shape=self.shape)
-        self.R = np.zeros(self.shape)
-
-    def __call__(self, x):
-        self.R = self.gamma * self.R + x
-        self.running_ms.update(self.R)
-        x = x / (self.running_ms.std + 1e-8)  # Only divided std
-        return x
-
-    def reset(self):
-        # When an episode is done, we should reset 'self.R'
-        self.R = np.zeros(self.shape)
+def orthogonal_init(layer, gain: float = 1.0):
+    if isinstance(layer, torch.nn.Linear):
+        torch.nn.init.orthogonal_(layer.weight, gain=gain)
+        torch.nn.init.constant_(layer.bias, 0)
 
 
 def normalize(data: Tensor):
@@ -108,3 +60,20 @@ def gaussian_mixture_model(weights: Tensor, loc: Tensor, scale: Tensor) -> Distr
     comp = Independent(Normal(loc, scale), 1)
     gmm = MixtureSameFamilyWithEntropy(mix, comp)
     return gmm
+
+
+def beta_mixture_model(weights: Tensor, alpha: Tensor, beta: Tensor) -> Distribution:
+    """#### Create a Beta Mixture Model (BMM) distribution
+
+    Args:
+        weights (Tensor): logits_weights of the mixture components (batch_size, num_mixtures)
+        alpha (Tensor): (batch_size, num_mixtures, action_space)
+        beta (Tensor): (batch_size, num_mixtures, action_space)
+
+    Returns:
+        Distribution: bmm
+    """
+    mix = Categorical(logits=weights)
+    comp = Independent(Beta(alpha, beta), 1)
+    bmm = MixtureSameFamilyWithEntropy(mix, comp)
+    return bmm

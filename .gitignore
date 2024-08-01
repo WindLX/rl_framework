@@ -2,3 +2,4 @@
 .venv
 .vscode
 logs
+__pycache__/

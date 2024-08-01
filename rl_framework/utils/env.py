@@ -1,11 +1,11 @@
-from gymnasium.wrappers.autoreset import AutoResetWrapper
+from gymnasium import Wrapper
 
 
-class RlEnvWrapper(AutoResetWrapper):
+class RewardSumWrapper(Wrapper):
     """Wrapper for RL environment"""
 
-    def __init__(self, env):
-        super().__init__(env)
+    def __init__(self, env, **kwargs):
+        super().__init__(env, **kwargs)
         self.env = env
         self.rewards = []
 

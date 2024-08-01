@@ -1,4 +1,8 @@
-from .ppo import PPOAgent, PPOEvalAgent
-from .config import PPOConfigs, PPOEvalConfigs
+from .ppo import PPOAgent
+from .config import PPOConfig, AdvantageNormalizeOptions
 
-__all__ = ["PPOAgent", "PPOEvalAgent", "PPOConfigs", "PPOEvalConfigs"]
+__all__ = [
+    "PPOAgent",
+    "PPOConfig",
+    "AdvantageNormalizeOptions",
+]

@@ -1,64 +1,55 @@
-from typing import Union, Optional
+from typing import Optional
+from enum import Enum
 
-from torch.nn import Module
+from pydantic import model_validator, field_validator, ValidationInfo
 
-from labml.configs import BaseConfigs
-from labml.internal.configs.dynamic_hyperparam import (
-    FloatDynamicHyperParam,
-    IntDynamicHyperParam,
-)
-
-from gymnasium import Env
-from gymnasium.vector import VectorEnv
+from ..ac import ACConfig
+from ...utils.error import SharedACError
 
 
-class PPOConfigs(BaseConfigs):
+class AdvantageNormalizeOptions(Enum):
+    minibatch = 0
+    batch = 1
+    disable = 2
+
+
+class PPOConfig(ACConfig):
     """PPO Configurations"""
 
-    # model
-    model: Union[Module, tuple[Module, Module]]
-    # is actor and critic share the same model
-    is_model_shared: bool = True
-    # envs
-    envs: VectorEnv
     # Number of updates
     updates: int
-    # ⚙️ Number of epochs to train the model with sampled data.
-    # You can change this while the experiment is running.
-    epochs: IntDynamicHyperParam = IntDynamicHyperParam(8)
+    # ️Number of epochs to train the model with sampled data.
+    epochs: int = 4
     # Number of steps to run on each process for a single update
-    env_steps: int = 128
+    env_steps: int
     # Number of mini batches
     batches: int = 4
-    # ⚙️ Value loss coefficient.
-    # You can change this while the experiment is running.
-    value_loss_coef: FloatDynamicHyperParam = FloatDynamicHyperParam(0.5)
-    # ⚙️ Entropy bonus coefficient.
-    # You can change this while the experiment is running.
-    entropy_bonus_coef: FloatDynamicHyperParam = FloatDynamicHyperParam(0.01)
-    # ⚙️ Clip range.
-    clip_range: FloatDynamicHyperParam = FloatDynamicHyperParam(0.1)
-    # You can change this while the experiment is running.
-    # ⚙️ Learning rate.
-    learning_rate: FloatDynamicHyperParam = FloatDynamicHyperParam(1e-3, (0, 1e-3))
-    # gae_gamma
-    gae_gamma: float = 0.99
+    # Value loss coefficient.
+    value_loss_coef: Optional[float] = 0.5
+    # Entropy bonus coefficient.
+    entropy_bonus_coef: float = 0.01
+    # Clip range.
+    clip_range: float = 0.1
+    # gamma discount factor
+    gamma: float = 0.99
     # gae lambda
     gae_lambda: float = 0.95
-    # save_path
-    save_path: Optional[str] = None
+    # norm_advantage
+    advantage_normalize_option: AdvantageNormalizeOptions = (
+        AdvantageNormalizeOptions.minibatch
+    )
 
+    @model_validator(mode="after")
+    def check_value_loss_coef(self):
+        if self.value_loss_coef is None and self.is_model_shared:
+            raise SharedACError(
+                "`value_loss_coef` mustn't be None if `is_model_shared` is True"
+            )
+        return self
 
-class PPOEvalConfigs(BaseConfigs):
-    """Evaluation Configurations"""
-
-    # model
-    model: Module
-    # is actor and critic share the same model
-    is_model_shared: bool = True
-    # envs
-    env: Env
-    # save path
-    save_path: Optional[str] = None
-    # is_render
-    is_render: bool = True
+    @field_validator("clip_range", "gamma", "gae_lambda", mode="after")
+    @classmethod
+    def check_value_range(cls, v: float, info: ValidationInfo):
+        if v < 0 or v > 1:
+            raise ValueError(f"`{info.field_name}` should be in range [0, 1]")
+        return v
