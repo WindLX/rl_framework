@@ -4,15 +4,15 @@ from os import path
 
 from torch import Tensor, load, save, tensor, float32
 from torch.nn import Module
-from torch.nn.utils import clip_grad_norm_
+
 from torch.optim.optimizer import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 from gymnasium import Env
-from gymnasium.vector import VectorEnv
 from labml import tracker, logger
 from labml_helpers.device import DeviceConfigs
 
 from .config import ACConfig, ACEvalConfig
-from ...utils.optim import get_lr
+from ...env.worker import WorkerSet
 from ...utils.error import SharedACError
 
 
@@ -24,7 +24,7 @@ class ACAgent(metaclass=ABCMeta):
     def __init__(
         self,
         config: ACConfig,
-        envs: VectorEnv,
+        envs: WorkerSet,
         model: Union[Module, dict[str, Module]],
         optimizer: Union[Optimizer, dict[str, Optimizer]],
         lr_scheduler: Union[Optimizer, dict[str, Optional[Optimizer]], None],
@@ -38,7 +38,6 @@ class ACAgent(metaclass=ABCMeta):
 
         # initialize tensors for observations
         self.envs = envs
-        self.obs, info = self.envs.reset()
 
         # model
         if self.is_model_shared:
@@ -69,15 +68,15 @@ class ACAgent(metaclass=ABCMeta):
         lr_scheduler: Union[Optimizer, dict[str, Optional[Optimizer]], None],
     ):
         if is_model_shared:
-            if type(model) != Module:
+            if not isinstance(model, Module):
                 raise SharedACError(
                     "Model should be single model for shared actor-critic model"
                 )
-            if type(optimizer) != Optimizer:
+            if not isinstance(optimizer, Optimizer):
                 raise SharedACError(
                     "Learning rate should be single value for shared actor-critic model"
                 )
-            if lr_scheduler is not None and type(lr_scheduler) != Optimizer:
+            if lr_scheduler is not None and not isinstance(lr_scheduler, LRScheduler):
                 raise SharedACError(
                     "Learning rate scheduler should be single value for shared actor-critic model"
                 )
@@ -151,52 +150,9 @@ class ACAgent(metaclass=ABCMeta):
     ) -> Union[Tensor, tuple[Tensor, Tensor]]:
         raise NotImplementedError("Method not implemented")
 
+    @abstractmethod
     def train_step(self, samples: dict[str, Tensor]):
-        if self.is_model_shared:
-            loss = self.calc_loss(samples)
-
-            # Zero out the previously calculated gradients
-            self.optimizer.zero_grad()
-
-            # Calculate gradients
-            loss.backward()
-
-            # Clip gradients
-            if self.clip_grad_norm is not None:
-                clip_grad_norm_(self.model.parameters(), max_norm=self.clip_grad_norm)
-
-            # Update parameters based on gradients
-            self.optimizer.step()
-
-            # Set learning rate
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.step()
-
-            tracker.add("lr", get_lr(self.optimizer))
-        else:
-            actor_loss, critic_loss = self.calc_loss(samples)
-
-            self.actor_optimizer.zero_grad()
-            self.critic_optimizer.zero_grad()
-
-            actor_loss.backward()
-            critic_loss.backward()
-
-            if (actor_norm := self.clip_grad_norm["actor"]) is not None:
-                clip_grad_norm_(self.actor_model.parameters(), max_norm=actor_norm)
-            if (critic_norm := self.clip_grad_norm["critic"]) is not None:
-                clip_grad_norm_(self.critic_model.parameters(), max_norm=critic_norm)
-
-            self.actor_optimizer.step()
-            self.critic_optimizer.step()
-
-            if self.actor_lr_scheduler is not None:
-                self.actor_lr_scheduler.step()
-            if self.critic_lr_scheduler is not None:
-                self.critic_lr_scheduler.step()
-
-            tracker.add("actor_lr", get_lr(self.actor_optimizer))
-            tracker.add("critic_lr", get_lr(self.critic_optimizer))
+        raise NotImplementedError("Method not implemented")
 
 
 class ACEvalAgent:
@@ -248,14 +204,15 @@ class ACEvalAgent:
                     pi = self.actor_model(obs)
                 action = pi.sample().squeeze(0).cpu().numpy()
 
-                obs, reward, done, truncated, info = self.env.step(action)
+                obs, reward, teminated, truncated, info = self.env.step(action)
+                done = teminated or truncated
                 entropy_bonus = pi.entropy()
 
                 if self.is_render:
                     self.env.render()
 
-                if done or truncated:
-                    print("Episode finished after {} timesteps".format(step + 1))
+                if done:
+                    logger.log("Episode finished after {} timesteps".format(step + 1))
 
                 tracker.add({"reward": reward, "entropy_bonus": entropy_bonus})
                 tracker.save()

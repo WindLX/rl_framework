@@ -6,18 +6,13 @@ from torch.optim import Adam
 from torch.distributions import Categorical
 
 import gymnasium as gym
-from gymnasium.wrappers.autoreset import AutoResetWrapper
 from gymnasium.wrappers.rescale_action import RescaleAction
 from gymnasium.wrappers.normalize import NormalizeObservation, NormalizeReward
 
-from labml.internal.configs.dynamic_hyperparam import (
-    FloatDynamicHyperParam,
-    IntDynamicHyperParam,
-)
-
 from rl_framework.agent.ac import ACEvalConfig
 from rl_framework.agent.ppo import PPOConfig, AdvantageNormalizeOptions
-from rl_framework.utils.env import RewardSumWrapper
+from rl_framework.env.wrapper import RewardSumWrapper, SyncWrapper
+from rl_framework.env.worker import WorkerSet
 from rl_framework.utils.math import (
     orthogonal_init,
 )
@@ -29,10 +24,10 @@ class ActorModel(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.lin = nn.Linear(in_features=4, out_features=256)
+        self.lin = nn.Linear(in_features=6, out_features=256)
         self.lin2 = nn.Linear(in_features=256, out_features=128)
 
-        self.pi_logits = nn.Linear(in_features=128, out_features=2)
+        self.pi_logits = nn.Linear(in_features=128, out_features=3)
 
         self.activation = nn.Tanh()
 
@@ -48,7 +43,7 @@ class CriticModel(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.lin = nn.Linear(in_features=4, out_features=256)
+        self.lin = nn.Linear(in_features=6, out_features=256)
         self.lin2 = nn.Linear(in_features=256, out_features=128)
 
         self.value = nn.Linear(in_features=128, out_features=1)
@@ -71,20 +66,14 @@ if __name__ == "__main__":
 
     # train
     base_env = gym.make(env_name)
-    envs = gym.vector.AsyncVectorEnv(
-        [
-            lambda: RescaleAction(
-                NormalizeObservation(
-                    NormalizeReward(
-                        RewardSumWrapper(AutoResetWrapper(base_env)),
-                        gamma=gamma,
-                    )
-                ),
-                min_action=0.0,
-                max_action=1.0,
-            ),
-        ]
-        * 2
+    envs = WorkerSet(
+        NormalizeObservation(
+            NormalizeReward(
+                SyncWrapper(RewardSumWrapper(base_env)),
+                gamma=gamma,
+            )
+        ),
+        4,
     )
 
     ac_config = {
@@ -96,10 +85,10 @@ if __name__ == "__main__":
         },
     }
     ppo_config = {
-        "updates": 320,
-        "epochs": 4,
-        "env_steps": 500,
-        "batches": 4,
+        "updates": 1000,
+        "epochs": 10,
+        "batch_size": 2048,
+        "mini_batch_size": 64,
         "value_loss_coef": None,
         "entropy_bonus_coef": 0.01,
         "clip_range": 0.1,
@@ -124,26 +113,18 @@ if __name__ == "__main__":
         "critic": Adam(model["critic"].parameters(), lr=3e-4),
     }
     lr_scheduler = {
-        "actor": None,
-        "critic": None,
-        # "actor": torch.optim.lr_scheduler.ExponentialLR(
-        #     optimizer["actor"], gamma=0.999
-        # ),
-        # "critic": torch.optim.lr_scheduler.ExponentialLR(
-        #     optimizer["critic"], gamma=0.999
-        # ),
+        "actor": torch.optim.lr_scheduler.ExponentialLR(
+            optimizer["actor"], gamma=0.9995
+        ),
+        "critic": torch.optim.lr_scheduler.ExponentialLR(
+            optimizer["critic"], gamma=0.9995
+        ),
     }
 
     # eval
     eval_base_env = gym.make(env_name, render_mode="human")
-    eval_env = AutoResetWrapper(
-        RewardSumWrapper(
-            RescaleAction(
-                NormalizeObservation(eval_base_env),
-                min_action=0.0,
-                max_action=1.0,
-            )
-        ),
+    eval_env = RewardSumWrapper(
+        NormalizeObservation(eval_base_env),
     )
 
     ac_eval_conf = {

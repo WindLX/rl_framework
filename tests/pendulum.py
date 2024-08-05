@@ -20,21 +20,6 @@ from rl_framework.utils.math import (
 from tests.test_ppo import test
 
 
-class HeightRewardWrapper(gym.Wrapper):
-    def __init__(self, env, height_bonus: float = 0.1, **kwargs):
-        super().__init__(env, **kwargs)
-        self.env = env
-        self.height_bonus = height_bonus
-
-    def reset(self, **kwargs):
-        return self.env.reset(**kwargs)
-
-    def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        reward += self.height_bonus * abs(obs[1])
-        return obs, reward, terminated, truncated, info
-
-
 class Encoder(nn.Module):
     def __init__(self, in_features: int, out_features: int):
         super().__init__()
@@ -51,10 +36,10 @@ class Encoder(nn.Module):
 
 
 class ActorModel(nn.Module):
-    def __init__(self, num_mixtures=1):
+    def __init__(self, num_mixtures=4):
         super().__init__()
 
-        self.encoder = Encoder(2, 128)
+        self.encoder = Encoder(3, 128)
         self.decoder = BetaActionDecoder(
             action_space=1,
             num_mixtures=num_mixtures,
@@ -71,7 +56,7 @@ class CriticModel(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.encoder = Encoder(2, 128)
+        self.encoder = Encoder(3, 128)
         self.value = nn.Linear(in_features=self.encoder.out_features, out_features=1)
 
     def forward(self, obs: torch.Tensor):
@@ -82,19 +67,15 @@ class CriticModel(nn.Module):
 
 
 if __name__ == "__main__":
-    env_name = "MountainCarContinuous-v0"
+    env_name = "Pendulum-v1"
 
     gamma = 0.99
-    base_env = gym.make(env_name)
+    base_env = gym.make(env_name, g=9.81)
     envs = WorkerSet(
         RescaleAction(
             NormalizeObservation(
                 NormalizeReward(
-                    SyncWrapper(
-                        RewardSumWrapper(
-                            HeightRewardWrapper(base_env, height_bonus=0.1)
-                        )
-                    ),
+                    SyncWrapper(RewardSumWrapper(base_env)),
                     gamma=gamma,
                 )
             ),
@@ -115,9 +96,11 @@ if __name__ == "__main__":
     ppo_config = {
         "updates": 500,
         "epochs": 10,
+        "batch_size": 2048,
+        "mini_batch_size": 128,
         "value_loss_coef": None,
         "entropy_bonus_coef": 0.01,
-        "clip_range": 0.2,
+        "clip_range": 0.1,
         "gamma": gamma,
         "gae_lambda": 0.95,
         "advantage_normalize_option": AdvantageNormalizeOptions.batch,
@@ -139,18 +122,18 @@ if __name__ == "__main__":
         "critic": Adam(model["critic"].parameters(), lr=3e-4),
     }
     lr_scheduler = {
-        "actor": None,
-        "critic": None,
-        # "actor": torch.optim.lr_scheduler.ExponentialLR(
-        #     optimizer["actor"], gamma=0.999
-        # ),
-        # "critic": torch.optim.lr_scheduler.ExponentialLR(
-        #     optimizer["critic"], gamma=0.999
-        # ),
+        # "actor": None,
+        # "critic": None,
+        "actor": torch.optim.lr_scheduler.ExponentialLR(
+            optimizer["actor"], gamma=0.9999
+        ),
+        "critic": torch.optim.lr_scheduler.ExponentialLR(
+            optimizer["critic"], gamma=0.9999
+        ),
     }
 
     # eval
-    eval_base_env = gym.make(env_name, render_mode="human")
+    eval_base_env = gym.make(env_name, render_mode="human", g=9.81)
     eval_env = RewardSumWrapper(
         RescaleAction(
             NormalizeObservation(eval_base_env),

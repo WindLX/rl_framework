@@ -17,10 +17,10 @@ class ActorModel(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.lin = nn.Linear(in_features=4, out_features=64)
+        self.lin = nn.Linear(in_features=8, out_features=64)
         self.lin2 = nn.Linear(in_features=64, out_features=64)
 
-        self.pi_logits = nn.Linear(in_features=64, out_features=2)
+        self.pi_logits = nn.Linear(in_features=64, out_features=4)
 
         self.activation = nn.LeakyReLU()
 
@@ -36,7 +36,7 @@ class CriticModel(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.lin = nn.Linear(in_features=4, out_features=64)
+        self.lin = nn.Linear(in_features=8, out_features=64)
         self.lin2 = nn.Linear(in_features=64, out_features=64)
 
         self.value = nn.Linear(in_features=64, out_features=1)
@@ -53,13 +53,13 @@ class CriticModel(nn.Module):
 
 
 if __name__ == "__main__":
-    env_name = "CartPole-v1"
+    env_name = "LunarLander-v2"
 
     # train
     base_env = gym.make(env_name)
     envs = WorkerSet(
         NormalizeObservation(NormalizeReward(SyncWrapper(RewardSumWrapper(base_env)))),
-        1,
+        4,
     )
 
     ac_config = {
@@ -73,6 +73,8 @@ if __name__ == "__main__":
     ppo_config = {
         "updates": 3000,
         "epochs": 10,
+        "batch_size": 2048,
+        "mini_batch_size": 128,
         "value_loss_coef": None,
         "entropy_bonus_coef": 0.01,
         "clip_range": 0.2,
@@ -93,10 +95,10 @@ if __name__ == "__main__":
     }
     lr_scheduler = {
         "actor": torch.optim.lr_scheduler.ExponentialLR(
-            optimizer["actor"], gamma=0.9993
+            optimizer["actor"], gamma=0.9999
         ),
         "critic": torch.optim.lr_scheduler.ExponentialLR(
-            optimizer["critic"], gamma=0.9993
+            optimizer["critic"], gamma=0.9999
         ),
     }
 

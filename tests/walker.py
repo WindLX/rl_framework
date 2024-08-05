@@ -5,13 +5,13 @@ import torch.nn as nn
 from torch.optim import Adam
 
 import gymnasium as gym
-from gymnasium.wrappers.autoreset import AutoResetWrapper
 from gymnasium.wrappers.rescale_action import RescaleAction
 from gymnasium.wrappers.normalize import NormalizeObservation, NormalizeReward
 
 from rl_framework.agent.ac import ACEvalConfig
 from rl_framework.agent.ppo import PPOConfig, AdvantageNormalizeOptions
-from rl_framework.utils.env import RewardSumWrapper
+from rl_framework.env.wrapper import RewardSumWrapper, SyncWrapper
+from rl_framework.env.worker import WorkerSet
 from rl_framework.model.decoder import BetaActionDecoder
 from rl_framework.utils.math import (
     orthogonal_init,
@@ -24,25 +24,22 @@ class Encoder(nn.Module):
     def __init__(self, out_features: int):
         super().__init__()
         self.out_features = out_features
-        self.lin1 = nn.Linear(in_features=24, out_features=2048)
-        self.lin2 = nn.Linear(in_features=2048, out_features=out_features)
-        self.res = nn.Linear(in_features=2048, out_features=out_features)
+        self.lin1 = nn.Linear(in_features=24, out_features=64)
+        self.lin2 = nn.Linear(in_features=64, out_features=out_features)
         self.activation = nn.ReLU()
 
     def forward(self, obs: torch.Tensor):
         x = obs
         h1 = self.activation(self.lin1(x))
         h2 = self.activation(self.lin2(h1))
-        identity = self.activation(self.res(h1))
-        h3 = h2 + identity
-        return h3
+        return h2
 
 
 class ActorModel(nn.Module):
-    def __init__(self, num_mixtures=32):
+    def __init__(self, num_mixtures=1):
         super().__init__()
 
-        self.encoder = Encoder(1024)
+        self.encoder = Encoder(64)
         self.decoder = BetaActionDecoder(
             action_space=4,
             num_mixtures=num_mixtures,
@@ -59,7 +56,7 @@ class CriticModel(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.encoder = Encoder(1024)
+        self.encoder = Encoder(64)
         self.value = nn.Linear(in_features=self.encoder.out_features, out_features=1)
 
     def forward(self, obs: torch.Tensor):
@@ -74,19 +71,18 @@ if __name__ == "__main__":
 
     gamma = 0.99
     base_env = gym.make(env_name)
-    envs = gym.vector.AsyncVectorEnv(
-        [
-            lambda: RescaleAction(
-                NormalizeObservation(
-                    NormalizeReward(
-                        RewardSumWrapper(AutoResetWrapper(base_env)), gamma=gamma
-                    )
-                ),
-                min_action=0.0,
-                max_action=1.0,
-            )
-        ]
-        * 8
+    envs = WorkerSet(
+        RescaleAction(
+            NormalizeObservation(
+                NormalizeReward(
+                    SyncWrapper(RewardSumWrapper(base_env)),
+                    gamma=gamma,
+                )
+            ),
+            min_action=0.0,
+            max_action=1.0,
+        ),
+        4,
     )
 
     ac_config = {
@@ -98,16 +94,17 @@ if __name__ == "__main__":
         },
     }
     ppo_config = {
-        "updates": 500,
-        "epochs": 8,
-        "env_steps": 500,
-        "batches": 4,
+        "updates": 320,
+        "epochs": 10,
+        "batch_size": 2048,
+        "mini_batch_size": 64,
         "value_loss_coef": None,
         "entropy_bonus_coef": 0.01,
         "clip_range": 0.2,
         "gamma": gamma,
         "gae_lambda": 0.95,
         "advantage_normalize_option": AdvantageNormalizeOptions.batch,
+        "use_clip_value_loss": False,
     }
 
     conf = PPOConfig(**ac_config, **ppo_config)
@@ -122,18 +119,18 @@ if __name__ == "__main__":
         "critic": critic,
     }
     optimizer = {
-        "actor": Adam(model["actor"].parameters(), lr=3e-4),
-        "critic": Adam(model["critic"].parameters(), lr=3e-4),
+        "actor": Adam(model["actor"].parameters(), lr=1e-3),
+        "critic": Adam(model["critic"].parameters(), lr=1e-3),
     }
     lr_scheduler = {
-        "actor": None,
-        "critic": None,
-        # "actor": torch.optim.lr_scheduler.ExponentialLR(
-        #     optimizer["actor"], gamma=0.999
-        # ),
-        # "critic": torch.optim.lr_scheduler.ExponentialLR(
-        #     optimizer["critic"], gamma=0.999
-        # ),
+        # "actor": None,
+        # "critic": None,
+        "actor": torch.optim.lr_scheduler.ExponentialLR(
+            optimizer["actor"], gamma=0.9999
+        ),
+        "critic": torch.optim.lr_scheduler.ExponentialLR(
+            optimizer["critic"], gamma=0.9999
+        ),
     }
 
     # eval

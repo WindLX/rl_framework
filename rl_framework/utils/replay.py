@@ -1,78 +1,140 @@
 import numpy as np
 import torch
-from gymnasium.vector import VectorEnv
 
 from .gae import GAE
 from .math import normalize
 
 
+class Trajectory:
+    def __init__(self, extra: list[str] = []) -> None:
+        """Initialize the trajectory
+
+        Args:
+            extra (list[str]): the extra information to be stored in the trajectory
+        """
+        self.obss = []
+        self.actions = []
+        self.rewards = []
+        self.dones = []
+        self.extra = list(map(lambda x: f"{x}s", extra))
+        for e in self.extra:
+            setattr(self, e, [])
+
+    def clear(self) -> None:
+        """Clear the trajectory"""
+        self.obss = []
+        self.actions = []
+        self.rewards = []
+        self.dones = []
+        for e in self.extra:
+            setattr(self, e, [])
+
+    def reset(self, obs: np.ndarray) -> None:
+        """Reset the trajectory
+
+        Args:
+            obs (np.ndarray): the observation of the environment
+        """
+        self.clear()
+        self.obss = [obs]
+
+    def append(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: float,
+        done: bool,
+        **kwargs,
+    ) -> None:
+        """Append the data collected in one step to the trajectory
+
+        Args:
+            obs (np.ndarray): the observation of the environment
+            action (np.ndarray): the action taken by the agent
+            reward (float): the reward received by the agent
+            done (bool): whether the episode is finished
+            kwargs (dict): the extra information to be stored in the trajectory
+        """
+        self.obss.append(obs)
+        self.actions.append(action)
+        self.rewards.append(reward)
+        self.dones.append(done)
+        for k, v in kwargs.items():
+            setattr(self, f"{k}s", getattr(self, f"{k}s") + [v])
+
+    def __len__(self) -> int:
+        return (
+            len(list(filter(lambda x: not x, self.dones))) + 1 if self.dones[-1] else 0
+        )
+
+    def clip(self) -> None:
+        length = len(self)
+        self.obss = self.obss[:length]
+        self.actions = self.actions[:length]
+        self.rewards = self.rewards[:length]
+        self.dones = self.dones[:length]
+        for e in self.extra:
+            setattr(self, e, getattr(self, e)[:length])
+
+
 class ReplayBuffer:
     def __init__(
         self,
-        env_steps: int,
-        envs: VectorEnv,
+        num_envs: int,
         gae: GAE,
         device: str,
     ):
         self.device = device
         self.gae = gae
 
-        obs_shape = envs.observation_space.shape
-        obs_type = envs.observation_space.dtype
-
-        action_shape = envs.action_space.shape
-        action_type = envs.action_space.dtype
-
-        num_envs = obs_shape[0]
-
-        # temp data which collected in one episode
-        self.obs_buffer = np.zeros(
-            (num_envs, env_steps, *obs_shape[1:]), dtype=obs_type
-        )
-        self.rewards = np.zeros((num_envs, env_steps), dtype=np.float32)
-        self.actions = np.zeros(
-            (num_envs, env_steps, *action_shape[1:]), dtype=action_type
-        )
-        self.done = np.zeros((num_envs, env_steps), dtype=np.uint8)
-        self.log_pis = np.zeros((num_envs, env_steps), dtype=np.float32)
-        self.values = np.zeros((num_envs, env_steps + 1), dtype=np.float32)
+        self.trajectories = [Trajectory(["value", "log_pi"]) for _ in range(num_envs)]
 
         # Experience pool
-        self.experience_pool = {
-            "obs": None,
+        self._experience_pool = {
+            "obss": None,
             "actions": None,
             "values": None,
             "log_pis": None,
             "advantages": None,
         }
 
+    def reset(self, obs: np.ndarray) -> None:
+        for i, trajectory in enumerate(self.trajectories):
+            trajectory.reset(obs[i])
+
     def append(
         self,
-        env_step: int,
-        obs: np.ndarray,
+        next_obs: np.ndarray,
         actions: np.ndarray,
         rewards: np.ndarray,
         done: np.ndarray,
-        log_pis: np.ndarray,
-        values: np.ndarray,
+        value: np.ndarray,
+        log_pi: np.ndarray,
     ):
         """append the data collected in one step to the replay buffer
 
         Args:
-            env_step (int): the step index in one episode
-            obs (np.ndarray): the observation of the environment
+            next_obs (np.ndarray): the next observation of the environment
             actions (np.ndarray): the action taken by the agent
             rewards (np.ndarray): the reward received by the agent
             done (np.ndarray): whether the episode is finished
-            log_pis (np.ndarray): the log probability of the action taken by the agent
-            values (np.ndarray): the value of the state observed by the agent
+            value (np.ndarray): the value of the state
+            log_pi (np.ndarray): the log probability of the action
         """
-        self.obs_buffer[:, env_step] = obs
-        self.rewards[:, env_step] = rewards
-        self.actions[:, env_step] = actions
-        self.done[:, env_step] = done
-        self.log_pis[:, env_step] = log_pis
-        self.values[:, env_step] = values
+        for i, trajectory in enumerate(self.trajectories):
+            trajectory.append(
+                next_obs[i],
+                actions[i],
+                rewards[i],
+                done[i],
+                value=value[i],
+                log_pi=log_pi[i],
+            )
+
+    def clip(self) -> None:
+        """clip the data in the replay buffer"""
+        for trajectory in self.trajectories:
+            trajectory.clip()
 
     def append_last_values(self, values: np.ndarray):
         """append the last value of the episode to the replay buffer
@@ -80,55 +142,58 @@ class ReplayBuffer:
         Args:
             values (np.ndarray): the last value of the episode
         """
-        self.values[:, -1] = values
+        for i, trajectory in enumerate(self.trajectories):
+            trajectory.values.append(values[i])
 
     def calc_advantages(self):
         """calculate the advantages using Generalized Advantage Estimation (GAE), this function should be called after one episode is finished"""
-        self.advantages = self.gae(self.done, self.rewards, self.values)
+        self.advantages = []
+        for trajectory in self.trajectories:
+            advantage = self.gae(
+                trajectory.dones, trajectory.rewards, trajectory.values
+            )
+            self.advantages.append(advantage)
 
-    def clear_temp(self):
-        """clear the temp data which collected in one episode"""
-        self.obs_buffer = np.zeros_like(self.obs_buffer)
-        self.rewards = np.zeros_like(self.rewards)
-        self.actions = np.zeros_like(self.actions)
-        self.done = np.zeros_like(self.done)
-        self.log_pis = np.zeros_like(self.log_pis)
-        self.values = np.zeros_like(self.values)
-        if hasattr(self, "advantages"):
-            self.advantages = np.zeros_like(self.advantages)
+    def flatten(self):
+        """flatten the temp data which collected in one episode, convert to tensor adn move to the experience pool"""
+        self._experience_pool["obss"] = torch.from_numpy(
+            np.concatenate([trajectory.obss for trajectory in self.trajectories])
+        ).to(self.device)
+        self._experience_pool["actions"] = torch.from_numpy(
+            np.concatenate([trajectory.actions for trajectory in self.trajectories])
+        ).to(self.device)
+        self._experience_pool["values"] = torch.from_numpy(
+            np.concatenate([trajectory.values[:-1] for trajectory in self.trajectories])
+        ).to(self.device)
+        self._experience_pool["log_pis"] = torch.from_numpy(
+            np.concatenate([trajectory.log_pis for trajectory in self.trajectories])
+        ).to(self.device)
+        self._experience_pool["advantages"] = torch.from_numpy(
+            np.concatenate(self.advantages)
+        ).to(self.device)
 
-    def flatten_temp(self, normalize_advantage: bool):
-        """flatten the temp data which collected in one episode, convert to tensor adn move to the experience pool
+    def normalize_advantages(self):
+        """normalize the advantages in the experience pool"""
+        self._experience_pool["advantages"] = normalize(
+            self._experience_pool["advantages"]
+        )
 
-        Args:
-            normalize_advantage (bool, optional): whether to normalize the advantages. Defaults to True.
-        """
-        samples = {
-            "obs": self.obs_buffer,
-            "actions": self.actions,
-            "values": self.values[:, :-1],
-            "log_pis": self.log_pis,
-        }
-        if hasattr(self, "advantages"):
-            samples["advantages"] = self.advantages
-        samples_flat = {}
-        for k, v in samples.items():
-            v = v.reshape(v.shape[0] * v.shape[1], *v.shape[2:])
-            if k == "advantages" and normalize_advantage:
-                samples_flat[k] = normalize(torch.tensor(v, device=self.device))
-            else:
-                samples_flat[k] = torch.tensor(v, device=self.device)
-
-        for k, v in samples_flat.items():
-            self.experience_pool[k] = v
+    def clear_trajectories(self):
+        """clear the trajectories in the replay buffer"""
+        for trajectory in self.trajectories:
+            trajectory.clear()
 
     def clear(self):
         """clear the experience pool"""
-        self.clear_temp()
-        self.experience_pool = {
-            "obs": None,
+        self.clear_trajectories()
+        self._experience_pool = {
+            "obss": None,
             "actions": None,
             "values": None,
             "log_pis": None,
             "advantages": None,
         }
+
+    @property
+    def experience(self):
+        return self._experience_pool

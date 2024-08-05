@@ -20,10 +20,10 @@ class PPOConfig(ACConfig):
     updates: int
     # ️Number of epochs to train the model with sampled data.
     epochs: int = 4
-    # Number of steps to run on each process for a single update
-    env_steps: int
-    # Number of mini batches
-    batches: int = 4
+    # batch size
+    batch_size: int = 2048
+    # mini batch size
+    mini_batch_size: int = 64
     # Value loss coefficient.
     value_loss_coef: Optional[float] = 0.5
     # Entropy bonus coefficient.
@@ -38,6 +38,8 @@ class PPOConfig(ACConfig):
     advantage_normalize_option: AdvantageNormalizeOptions = (
         AdvantageNormalizeOptions.minibatch
     )
+    # use clip value loss
+    use_clip_value_loss: bool = False
 
     @model_validator(mode="after")
     def check_value_loss_coef(self):
